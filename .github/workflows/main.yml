@@ -1,0 +1,82 @@
+name: run
+
+on:
+  workflow_dispatch:
+    inputs:
+      modo:
+        description: 'turno = vigila solo lo que toca a esta hora · todas = revisa todo una vez'
+        required: false
+        default: 'turno'
+      espera:
+        description: 'Minutos máximos vigilando'
+        required: false
+        default: '15'
+
+concurrency:
+  group: run
+  cancel-in-progress: false
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 22
+    steps:
+      - name: Descargar archivos
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Caché de node_modules y Chromium de Puppeteer
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            ~/.cache/puppeteer
+          key: ${{ runner.os }}-node22-puppeteer-v3
+          restore-keys: |
+            ${{ runner.os }}-node22-puppeteer-
+
+      - name: Instalar librerías necesarias
+        run: |
+          if [ ! -f package.json ]; then npm init -y > /dev/null; fi
+          if [ "${{ steps.cache.outputs.cache-hit }}" = "true" ] && [ -d node_modules/puppeteer ] && [ -d node_modules/@supabase/supabase-js ] && [ -d node_modules/web-push ]; then
+            echo "Librerías ya están en la caché: no se instalan otra vez."
+          else
+            npm install axios cheerio jsdom express dotenv node-cron @supabase/supabase-js ws puppeteer puppeteer-extra puppeteer-extra-plugin-stealth web-push
+          fi
+
+      - name: main
+        timeout-minutes: 20
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+          MODO_ROBOT: ${{ github.event.inputs.modo || 'turno' }}
+          ESPERA_MAX_MIN: ${{ github.event.inputs.espera || '15' }}
+        run: node src/main.js
+
+      - name: Subir HTML de depuración
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-html
+          path: debug-html/
+          if-no-files-found: ignore
+
+      - name: notify
+        if: always()
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+        run: |
+          mkdir -p /tmp/avisos
+          (cd /tmp/avisos && npm init -y > /dev/null && npm install @supabase/supabase-js web-push --no-audit --no-fund --loglevel=error)
+          NODE_PATH=/tmp/avisos/node_modules node src/notify.js
